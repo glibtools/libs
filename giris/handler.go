@@ -122,7 +122,7 @@ func RestJSONError(c iris.Context, args ...interface{}) {
 		code      = 400
 		msg       string
 		data      interface{}
-		writeCode = false
+		writeCode = true
 	)
 	for _, arg := range args {
 		switch v := arg.(type) {
@@ -134,6 +134,14 @@ func RestJSONError(c iris.Context, args ...interface{}) {
 			msg = v.Error()
 		case bool:
 			writeCode = v
+		case JSONResponse:
+			code = v.Code
+			msg = v.Msg
+			data = v.Data
+		case *JSONResponse:
+			code = v.Code
+			msg = v.Msg
+			data = v.Data
 		default:
 			data = v
 		}
@@ -176,16 +184,13 @@ func parseRestFuncResult(result []reflect.Value, c iris.Context) error {
 			lastVal := last.Interface()
 			switch v := lastVal.(type) {
 			case j2rpc.ItfJ2rpcError:
-				return c.JSON(JSONResponse{
-					Code: v.ErrorCode(),
-					Msg:  v.Error(),
-					Data: v.ErrorData(),
-				})
+				RestJSONError(c, v.ErrorCode(), v.Error(), v.ErrorData())
 			case error:
-				return c.JSON(JSONResponse{Code: 500, Msg: v.Error()})
+				RestJSONError(c, 500, v)
 			default:
-				return c.JSON(JSONResponse{Code: 500, Msg: cast.ToString(v)})
+				RestJSONError(c, 500, cast.ToString(v))
 			}
+			return nil
 		}
 		result = result[:len(result)-1]
 	}
