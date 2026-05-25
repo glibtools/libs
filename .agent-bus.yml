@@ -1,0 +1,41 @@
+# agent-bus 项目配置 —— committed, 手动编辑
+# 这个文件告诉 reviewer 和 executor 怎么验证项目，以及哪些文件绝对不能动。
+
+project:
+  name: "libs"
+  language: "go"   # go | node | python | rust | mixed
+
+# 每个 phase 完成时跑这些命令验证是否真的 "done"。
+# 所有命令必须 exit 0，phase 才算通过。
+# Go 项目：禁用全局 `go build ./...` / `go test ./...`；check 用 `go vet`，test 只跑具体包和函数。
+verify:
+  check:
+    - "go vet ./..."
+  test:
+    - "true   # 按改动包填写，如 go test -run <Pattern> ./<changed-pkg>"
+  lint: []
+  sort: []
+
+# executor 绝对不能碰的文件/路径。每次 executor 跑完后 reviewer 验证
+# `git diff --name-only` 不含这些。支持 glob，路径相对项目根。
+off_limits:
+  - "go.mod"          # 改这个风险高，通常需要人工 review
+  - "go.sum"
+  - "conf.toml"
+  - ".env"
+  - "pro.env"
+  - ".agent-bus.yml"  # 配置文件自身
+  - "IDEAS.md"        # 用户的输入栏，executor 禁写
+
+# 可选：限制 executor 在每个 phase 的影响范围。
+# 设了的话告诉 executor diff 必须在这些路径内。
+# 注释掉表示无范围限制（只受 off_limits 约束）。
+# allowed_scope:
+#   - "src/**"
+#   - "tests/**"
+
+# 行为开关
+behavior:
+  auto_clear_ideas: false      # 首次问用户，之后记住选择
+  auto_commit_on_pass: false   # 为 true 时 phase 绿了 reviewer 不问直接 commit
+  max_diff_lines: 2000         # 单次 executor 跑产生 diff 超过此值则中止
