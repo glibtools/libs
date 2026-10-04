@@ -42,7 +42,10 @@ var (
 type JWT struct {
 	Expire int64
 	Store  ItfTokenStore
-	once   sync.Once
+	// MatchToken optionally compares a stored verifier to the presented bearer.
+	// Nil preserves the historical plaintext-store behavior.
+	MatchToken func(stored, presented string) bool
+	once       sync.Once
 }
 
 // AfterLogin ...
@@ -92,7 +95,11 @@ func (j *JWT) Verify(c iris.Context, call func(id string) (user interface{}, err
 		err = j2rpc.NewError(j2rpc.ErrAuthorization, ErrorTokenExpired)
 		return
 	}
-	if t.Token != token {
+	matches := t.Token == token
+	if j.MatchToken != nil {
+		matches = j.MatchToken(t.Token, token)
+	}
+	if !matches {
 		err = j2rpc.NewError(j2rpc.ErrAuthorization, ErrorTokenInvalid)
 		return
 	}

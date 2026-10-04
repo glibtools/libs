@@ -14,6 +14,8 @@ type Option func(option *ServerOption)
 type PrepareRequestBodyFuncType = func(*http.Request, []byte) ([]byte, error)
 
 type ServerOption struct {
+	// ValidateArguments optionally validates decoded arguments before invocation.
+	ValidateArguments   func([]reflect.Value) error
 	CallerAfterReadBody CallerBody
 	CallerBeforeWrite   CallerBody
 	PrepareWriter       func(http.ResponseWriter)
@@ -126,6 +128,12 @@ func (s *server) handleCallFunc(f funcInfo) Handler {
 			c.WriteResponse(NewError(ErrBadParams, err.Error()))
 			return
 		}
+		if s.option.ValidateArguments != nil {
+			if err = s.option.ValidateArguments(values); err != nil {
+				c.WriteResponse(err)
+				return
+			}
+		}
 		argValues = append(argValues, values...)
 		results := f.fn.Call(argValues)
 		if len(results) > 0 {
@@ -223,4 +231,9 @@ func WithPrepareWriter(fn func(http.ResponseWriter)) Option {
 	return func(option *ServerOption) {
 		option.PrepareWriter = fn
 	}
+}
+
+// WithValidateArguments installs an optional decoded-argument validator.
+func WithValidateArguments(fn func([]reflect.Value) error) Option {
+	return func(o *ServerOption) { o.ValidateArguments = fn }
 }

@@ -663,7 +663,14 @@ func NewDBLoggerWithLevel(level logger.LogLevel) logger.Interface {
 	return NewDBLoggerWithLevelOut(level, "sql")
 }
 
+// LoggerFactory optionally supplies application-specific database loggers.
+// Set once before initializing databases; nil retains the default logger.
+var LoggerFactory func(logger.LogLevel, string) logger.Interface
+
 func NewDBLoggerWithLevelOut(level logger.LogLevel, logName string) logger.Interface {
+	if LoggerFactory != nil {
+		return LoggerFactory(level, logName)
+	}
 	return logger.New(
 		util.ZapLogger(logName, "debug", "SQL"),
 		logger.Config{

@@ -78,6 +78,15 @@ func ConcurrentLimit(n int) iris.Handler {
 }
 
 func RateLimiter(limit float64, burst int, options ...rate.Option) context.Handler {
+	return rateLimiter(limit, burst, true, options...)
+}
+
+// PrivateRateLimiter preserves rate buckets without exposing the identifier header.
+func PrivateRateLimiter(limit float64, burst int, options ...rate.Option) context.Handler {
+	return rateLimiter(limit, burst, false, options...)
+}
+
+func rateLimiter(limit float64, burst int, expose bool, options ...rate.Option) context.Handler {
 	ops := []rate.Option{
 		rate.PurgeEvery(5*time.Minute, 15*time.Minute),
 		rate.ExceedHandler(func(c iris.Context) {
@@ -94,7 +103,9 @@ func RateLimiter(limit float64, burst int, options ...rate.Option) context.Handl
 		if jt := c.Values().GetString(jwt.TokenKey); jt != "" {
 			identifier = fmt.Sprintf("%s:%s", c.Path(), jt)
 		}
-		c.Header("X-RateLimit-Identifier", identifier)
+		if expose {
+			c.Header("X-RateLimit-Identifier", identifier)
+		}
 		rate.SetIdentifier(c, identifier)
 		rateHandler(c)
 	}
