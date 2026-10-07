@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -28,6 +30,16 @@ var (
 	ErrorFileIsNotImage = errors.New("文件类型错误")
 
 	ErrorFileIsTooLarge = errors.New("文件不能超过2MB")
+
+	// ErrUnsafeUploadPath reports a file path outside its upload directory.
+	ErrUnsafeUploadPath = errors.New("非法文件路径")
+
+	// ErrUploadPathEscape is the ErrUnsafeUploadPath subset proven to escape:
+	// lexical traversal, absolute paths or os.Root-confirmed escapes.
+	ErrUploadPathEscape error = uploadPathEscapeError{}
+
+	// ErrUploadPathUnavailable reports permission/IO failures; it is not unsafe.
+	ErrUploadPathUnavailable = errors.New("文件暂时无法处理")
 
 	_ = fileIsImage
 )
@@ -72,7 +84,74 @@ func LocalUploadPath() string {
 }
 
 func RemoveUploadFile(filePathName string) {
-	_ = os.Remove(filepath.Join(LocalUploadPath(), filePathName))
+	_ = RemoveUploadPath(LocalUploadPath(), filePathName)
+}
+
+// CheckUploadPath verifies that name refers to a non-directory entry inside dir.
+// A missing entry is accepted so replacing a vanished file keeps working.
+func CheckUploadPath(dir, name string) error {
+	if filepath.IsAbs(name) || !filepath.IsLocal(name) && filepath.Clean(name) != "." {
+		return ErrUploadPathEscape
+	}
+	if filepath.Clean(name) == "." {
+		return ErrUnsafeUploadPath
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return ErrUploadPathUnavailable
+	}
+	defer func() { _ = root.Close() }()
+	info, err := root.Lstat(name)
+	switch {
+	case err == nil && info.IsDir():
+		return ErrUnsafeUploadPath
+	case err == nil, isMissingPath(err):
+		return nil
+	case isRootEscape(err):
+		return ErrUploadPathEscape
+	case errors.Is(err, fs.ErrPermission):
+		return ErrUploadPathUnavailable
+	default:
+		// Other os.Root failures (loops, unsupported names) stay non-escape rejects.
+		return ErrUnsafeUploadPath
+	}
+}
+
+// RemoveUploadPath removes name from dir without following paths outside dir.
+func RemoveUploadPath(dir, name string) error {
+	if err := CheckUploadPath(dir, name); err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	if err = root.Remove(name); err != nil && !isMissingPath(err) {
+		return err
+	}
+	return nil
+}
+
+// isRootEscape matches os.Root's unexported "path escapes from parent" error.
+func isRootEscape(err error) bool {
+	return strings.HasSuffix(err.Error(), "path escapes from parent")
+}
+
+type uploadPathEscapeError struct{}
+
+func (uploadPathEscapeError) Error() string { return ErrUnsafeUploadPath.Error() }
+
+func (uploadPathEscapeError) Is(target error) bool { return target == ErrUnsafeUploadPath }
+
+func isMissingPath(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 }
 
 func Upload(r *http.Request) (filePathName string, err error) {
@@ -95,13 +174,18 @@ func Upload(r *http.Request) (filePathName string, err error) {
 		err = ErrorFileIsNotImage
 		return
 	}
+	oldFile := r.FormValue("oldFile")
+	if oldFile != "" {
+		if err = CheckUploadPath(LocalUploadPath(), oldFile); err != nil {
+			return
+		}
+	}
 	filePathName = filePathNameFunc(fmt.Sprintf("%s.%s", strings.ToUpper(UUID16md5hex()), extension))
 	writePath := filepath.Join(LocalUploadPath(), filePathName)
 	_ = os.MkdirAll(filepath.Dir(writePath), os.ModePerm)
 	if err = os.WriteFile(writePath, data, 0666); err != nil {
 		return
 	}
-	oldFile := r.FormValue("oldFile")
 	if oldFile != "" {
 		RemoveUploadFile(oldFile)
 	}

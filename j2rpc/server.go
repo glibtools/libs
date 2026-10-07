@@ -20,6 +20,14 @@ type ServerOption struct {
 	CallerBeforeWrite   CallerBody
 	PrepareWriter       func(http.ResponseWriter)
 	PrepareRequestBody  PrepareRequestBodyFuncType
+
+	// ValidateArgumentsContext runs first, after group middleware, so it can use
+	// the authenticated identity those middleware placed on the context.
+	ValidateArgumentsContext func(Context, []reflect.Value) error
+
+	// ResponseHook runs after CallerBeforeWrite with the request context, e.g. to
+	// seal the response per request. When set, early errors use generic text.
+	ResponseHook func(Context, []byte) ([]byte, error)
 }
 
 type server struct {
@@ -128,6 +136,12 @@ func (s *server) handleCallFunc(f funcInfo) Handler {
 			c.WriteResponse(NewError(ErrBadParams, err.Error()))
 			return
 		}
+		if s.option.ValidateArgumentsContext != nil {
+			if err = s.option.ValidateArgumentsContext(c, values); err != nil {
+				c.WriteResponse(err)
+				return
+			}
+		}
 		if s.option.ValidateArguments != nil {
 			if err = s.option.ValidateArguments(values); err != nil {
 				c.WriteResponse(err)
@@ -233,7 +247,18 @@ func WithPrepareWriter(fn func(http.ResponseWriter)) Option {
 	}
 }
 
+// WithResponseHook installs an optional request-aware response transform.
+func WithResponseHook(fn func(Context, []byte) ([]byte, error)) Option {
+	return func(o *ServerOption) { o.ResponseHook = fn }
+}
+
 // WithValidateArguments installs an optional decoded-argument validator.
 func WithValidateArguments(fn func([]reflect.Value) error) Option {
 	return func(o *ServerOption) { o.ValidateArguments = fn }
+}
+
+// WithValidateArgumentsContext installs an optional validator that also sees
+// the request context; it runs before WithValidateArguments.
+func WithValidateArgumentsContext(fn func(Context, []reflect.Value) error) Option {
+	return func(o *ServerOption) { o.ValidateArgumentsContext = fn }
 }

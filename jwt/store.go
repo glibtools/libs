@@ -16,6 +16,15 @@ type ItfTokenStore interface {
 	ClearExpiredToken()
 }
 
+// ItfTokenFinder is an optional ItfTokenStore extension. FindToken selects the
+// record for key that matches the presented bearer and sets Token.StorageKey so
+// sliding refresh writes back to that record. A non-nil err means the store
+// could not be read; Verify returns it instead of an authorization failure.
+// Stores without it keep GetToken.
+type ItfTokenFinder interface {
+	FindToken(key, presented string) (t *Token, has bool, err error)
+}
+
 type RedisTokenStore struct {
 	store *mdb.RedisStore
 	mem   *mdb.FreeStore

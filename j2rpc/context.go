@@ -114,50 +114,50 @@ func (r *rpcContext) ReadBody() (err error) {
 	}
 	status, err := getValidateRequestStatus(r.req)
 	if err != nil {
-		r.StopWriteStringStatus(status, err.Error())
+		r.stopPrepare(status, err.Error())
 		return
 	}
 	if r.req.Body == nil {
-		r.StopWriteStringStatus(http.StatusBadRequest, "missing request body")
+		r.stopPrepare(http.StatusBadRequest, "missing request body")
 		return
 	}
 	defer func() { _ = r.req.Body.Close() }()
 	body, err := io.ReadAll(r.req.Body)
 	if err != nil {
-		r.StopWriteStringStatus(http.StatusBadRequest, err.Error())
+		r.stopPrepare(http.StatusBadRequest, err.Error())
 		return
 	}
 	//if we need reuse body, set body to req.Body
 	//r.req.Body = io.NopCloser(io.NewSectionReader(bytes.NewReader(body), 0, int64(len(body))))
 	if callerAfterReadBody := r.Server().Option().CallerAfterReadBody; callerAfterReadBody != nil {
 		if body, err = callerAfterReadBody(bytes.TrimSpace(body)); err != nil {
-			r.StopWriteStringStatus(http.StatusBadRequest, err.Error())
+			r.stopPrepare(http.StatusBadRequest, err.Error())
 			return
 		}
 	}
 	if prepareRequestBody := r.Server().Option().PrepareRequestBody; prepareRequestBody != nil {
 		if body, err = prepareRequestBody(r.req, bytes.TrimSpace(body)); err != nil {
-			r.StopWriteStringStatus(http.StatusBadRequest, err.Error())
+			r.stopPrepare(http.StatusBadRequest, err.Error())
 			return
 		}
 	}
 	if len(body) == 0 {
-		r.StopWriteStringStatus(http.StatusBadRequest, "empty request body")
+		r.stopPrepare(http.StatusBadRequest, "empty request body")
 		return
 	}
 	r.SetValue(BodyContextKey, body)
 	msg := &RPCMessage{}
 	if err = JSONDecode(body, msg); err != nil {
-		r.StopWriteStringStatus(http.StatusBadRequest, err.Error())
+		r.stopPrepare(http.StatusBadRequest, err.Error())
 		return
 	}
 	if !msg.hasValidID() {
-		r.StopWriteStringStatus(http.StatusBadRequest, "invalid request id")
+		r.stopPrepare(http.StatusBadRequest, "invalid request id")
 		return
 	}
 	msg.Method = strings.TrimSpace(msg.Method)
 	if msg.Method == "" {
-		r.StopWriteStringStatus(http.StatusBadRequest, "missing method")
+		r.stopPrepare(http.StatusBadRequest, "missing method")
 		return
 	}
 	msg.FormatMethod()
@@ -208,6 +208,15 @@ func (r *rpcContext) StopWriteStringStatus(status int, str string) {
 	r.SetWrote(true)
 }
 
+// stopPrepare writes an early error. With a ResponseHook the detail could carry
+// request data that bypassed the hook, so only the status text is returned.
+func (r *rpcContext) stopPrepare(status int, detail string) {
+	if r.server != nil && r.Server().Option().ResponseHook != nil {
+		detail = http.StatusText(status)
+	}
+	r.StopWriteStringStatus(status, detail)
+}
+
 func (r *rpcContext) Writer() http.ResponseWriter { return r.writer }
 
 // WriteResponse write response
@@ -240,19 +249,32 @@ func (r *rpcContext) WriteResponse(args ...interface{}) {
 	msg.Params = nil
 	data, err := JSONEncode(msg)
 	if err != nil {
-		r.StopWriteStringStatus(http.StatusInternalServerError, err.Error())
+		r.stopPrepare(http.StatusInternalServerError, err.Error())
 		return
 	}
 	if callerBeforeWrite := r.Server().Option().CallerBeforeWrite; callerBeforeWrite != nil {
 		if data, err = callerBeforeWrite(bytes.TrimSpace(data)); err != nil {
-			r.StopWriteStringStatus(http.StatusInternalServerError, err.Error())
+			r.stopPrepare(http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	prepareWriter, hook := r.Server().Option().PrepareWriter, r.Server().Option().ResponseHook
+	// With a ResponseHook, PrepareWriter runs first so the hook decides the
+	// final outer headers (e.g. moves sensitive ones into a sealed envelope);
+	// without a hook the default order below is kept.
+	if hook != nil && prepareWriter != nil {
+		prepareWriter(r.Writer())
+	}
+	if hook != nil {
+		if data, err = hook(r, data); err != nil {
+			r.stopPrepare(http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
 	r.Writer().Header().Set("X-Content-Type-Options", "nosniff")
 	r.Writer().Header().Set("X-Content-Length", strconv.Itoa(len(data)))
 	r.Writer().Header().Set("Content-Type", "application/json; charset=utf-8")
-	if prepareWriter := r.Server().Option().PrepareWriter; prepareWriter != nil {
+	if hook == nil && prepareWriter != nil {
 		prepareWriter(r.Writer())
 	}
 	r.Writer().WriteHeader(http.StatusOK)

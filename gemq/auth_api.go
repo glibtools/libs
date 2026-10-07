@@ -27,10 +27,20 @@ type AuthAPI struct {
 	AclFunc     MqttFunc
 	WriteLog    bool
 	IsSuperFunc func(*AuthRequest) bool
+	// StrictACL routes every ACL request to AclFunc (deny when unset): no
+	// automatic allow for subscribe, pong or super names, no request access
+	// log, and fixed error texts. Disabled keeps the historical behavior.
+	StrictACL bool
 }
 
 // ACL ...
 func (a *AuthAPI) ACL(c iris.Context, d *AuthRequest) (result *AuthResult, err error) {
+	if a.StrictACL {
+		if a.AclFunc == nil {
+			return &AuthResult{Result: "deny"}, nil
+		}
+		return a.AclFunc(c, d)
+	}
 	if a.isSuper(d) || strings.HasSuffix(d.Topic, "/pong") || d.Action == "subscribe" {
 		return &AuthResult{Result: "allow"}, nil
 	}
@@ -55,11 +65,11 @@ func (a *AuthAPI) Auth(c iris.Context, d *AuthRequest) (result *AuthResult, err 
 func (a *AuthAPI) Handle(r iris.Party) iris.Party {
 	p := r.Party("/mqtt")
 	p.UseRouter(recover.New(), cors.New().Handler())
-	if a.WriteLog {
+	if a.WriteLog && !a.StrictACL {
 		p.UseRouter(accesslog.New(GetLogger().Writer()).Handler)
 	}
-	p.Post("/auth", handlerMqtt(a.Auth))
-	p.Post("/acl", handlerMqtt(a.ACL))
+	p.Post("/auth", handlerMqtt(a.Auth, a.StrictACL))
+	p.Post("/acl", handlerMqtt(a.ACL, a.StrictACL))
 	return p
 }
 
@@ -114,17 +124,32 @@ type AuthResult struct {
 
 type MqttFunc func(c iris.Context, d *AuthRequest) (result *AuthResult, err error)
 
-func handlerMqtt(fn MqttFunc) iris.Handler {
+// handlerMqtt resets pooled requests on borrow and return, so a body that
+// omits a field never inherits it from an earlier request. In strict mode
+// errors are reported with fixed texts only.
+func handlerMqtt(fn MqttFunc, strict bool) iris.Handler {
 	return func(c iris.Context) {
 		d := poolAuthRequest.Get().(*AuthRequest)
-		defer poolAuthRequest.Put(d)
+		d.Reset()
+		defer func() {
+			d.Reset()
+			poolAuthRequest.Put(d)
+		}()
 		if err := c.ReadJSON(d); err != nil {
-			giris.RestJSONError(c, 400, err.Error(), true)
+			msg := "invalid request"
+			if !strict {
+				msg = err.Error()
+			}
+			giris.RestJSONError(c, 400, msg, true)
 			return
 		}
 		r, err := fn(c, d)
 		if err != nil {
-			giris.RestJSONError(c, 500, err.Error(), true)
+			msg := "request failed"
+			if !strict {
+				msg = err.Error()
+			}
+			giris.RestJSONError(c, 500, msg, true)
 			return
 		}
 		_ = c.JSON(r)

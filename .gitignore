@@ -48,3 +48,5 @@ tests
 .serena
 .codex
 .claude
+!/securechannel/*_test.go
+!/cmd/secrets-bundle/*_test.go

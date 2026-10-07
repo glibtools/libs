@@ -86,7 +86,10 @@ func (j *JWT) Verify(c iris.Context, call func(id string) (user interface{}, err
 		err = j2rpc.NewError(j2rpc.ErrAuthorization, ErrorTokenMalformed)
 		return
 	}
-	t, has := j.Store.GetToken(getJWTKey(id))
+	t, has, err := j.findToken(getJWTKey(id), token)
+	if err != nil {
+		return
+	}
 	if !has {
 		err = j2rpc.NewError(j2rpc.ErrAuthorization, ErrorTokenNotValidYet)
 		return
@@ -112,6 +115,16 @@ func (j *JWT) Verify(c iris.Context, call func(id string) (user interface{}, err
 	return
 }
 
+// findToken uses the optional store lookup when available, else the historical
+// single-key lookup. A finder error (store unavailable) is returned as is.
+func (j *JWT) findToken(key, presented string) (*Token, bool, error) {
+	if f, ok := j.Store.(ItfTokenFinder); ok {
+		return f.FindToken(key, presented)
+	}
+	t, has := j.Store.GetToken(key)
+	return t, has, nil
+}
+
 // lazyInit ......
 func (j *JWT) lazyInit() *JWT {
 	j.once.Do(func() {
@@ -135,7 +148,11 @@ func (j *JWT) refreshToken(t *Token) {
 		return
 	}
 	t.ExpiresAt = util.TimeNow().Unix() + j.Expire
-	j.Store.SetToken(getJWTKey(t.ID), t)
+	key := t.StorageKey
+	if key == "" {
+		key = getJWTKey(t.ID)
+	}
+	j.Store.SetToken(key, t)
 }
 
 func (j *JWT) runClearExpiredToken() { go util.Ticker(time.Hour*10, j.Store.ClearExpiredToken) }
@@ -144,6 +161,8 @@ type Token struct {
 	ID        string `json:"id,omitempty"`
 	ExpiresAt int64  `json:"expires_at,omitempty"`
 	Token     string `json:"token,omitempty"`
+	// StorageKey is the store record selected by ItfTokenFinder; never serialized.
+	StorageKey string `json:"-"`
 }
 
 func (t *Token) expired() bool { return t.ExpiresAt < util.TimeNow().Unix() }
