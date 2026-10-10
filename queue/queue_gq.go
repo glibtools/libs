@@ -403,8 +403,7 @@ func (w *gqWorker) runTask(t GQueueTask, handler GQueueHandler) {
 		maxRetryNumber = t.MaxRetry
 	}
 	if t.Retried >= maxRetryNumber {
-		w.logger.Errorf("task %s retried %d times(max retry %d), but still failed; Error: %s; Data: %s",
-			t.Name, t.Retried, maxRetryNumber, err.Error(), string(t.Data))
+		w.logger.Errorf("task failed type=%s id=%s", t.Name, t.ID)
 		return
 	}
 
